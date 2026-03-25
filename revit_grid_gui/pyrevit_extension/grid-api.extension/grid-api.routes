@@ -1,0 +1,71 @@
+"""pyRevit Routes API for creating grids in Revit."""
+
+from pyrevit import routes
+from pyrevit import revit, DB
+
+api = routes.API("grid-api")
+
+
+@api.route("/create_grids/", methods=["POST"])
+def create_grids(request):
+    """Receive grid data from the external GUI and create grids in Revit."""
+    doc = revit.doc
+
+    if not doc:
+        return routes.Response(
+            status=500,
+            data={"error": "No hay documento activo en Revit."},
+        )
+
+    data = request.data
+    grids_x = data.get("grids_x", [])
+    grids_y = data.get("grids_y", [])
+    extent = data.get("extent", 5.0)
+
+    # Convert metres to feet (Revit internal units)
+    M_TO_FT = 3.28084
+
+    created = 0
+
+    with revit.Transaction("Create Grids from GUI"):
+        # Bounding box for line extents
+        all_x = [g["x"] for g in grids_x]
+        all_y = [g["y"] for g in grids_y]
+
+        x_min = min(all_x) if all_x else 0
+        x_max = max(all_x) if all_x else 0
+        y_min = min(all_y) if all_y else 0
+        y_max = max(all_y) if all_y else 0
+
+        # Create vertical grids (X axis)
+        for g in grids_x:
+            x = g["x"] * M_TO_FT
+            y0 = (y_min - extent) * M_TO_FT
+            y1 = (y_max + extent) * M_TO_FT
+
+            line = DB.Line.CreateBound(
+                DB.XYZ(x, y0, 0),
+                DB.XYZ(x, y1, 0),
+            )
+            grid = DB.Grid.Create(doc, line)
+            grid.Name = g["name"]
+            created += 1
+
+        # Create horizontal grids (Y axis)
+        for g in grids_y:
+            y = g["y"] * M_TO_FT
+            x0 = (x_min - extent) * M_TO_FT
+            x1 = (x_max + extent) * M_TO_FT
+
+            line = DB.Line.CreateBound(
+                DB.XYZ(x0, y, 0),
+                DB.XYZ(x1, y, 0),
+            )
+            grid = DB.Grid.Create(doc, line)
+            grid.Name = g["name"]
+            created += 1
+
+    return routes.Response(
+        status=200,
+        data={"success": True, "created": created},
+    )
