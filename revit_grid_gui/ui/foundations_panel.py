@@ -575,6 +575,7 @@ class FoundationsPanel(QWidget):
         self._btn_send.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         root.addWidget(self._btn_send)
 
+
         # --- Progress ---
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
@@ -673,6 +674,28 @@ class FoundationsPanel(QWidget):
         """Signal to clear all placed foundations from canvas."""
         self._clear_placed_requested = True
         # This will be connected externally to canvas.clear_foundations()
+
+    def _on_create_dims(self):
+        """Create grid dimensions in Revit."""
+        import requests
+        self._btn_dims.setEnabled(False)
+        self._btn_dims.setText("Creando cotas...")
+        try:
+            resp = requests.post(
+                "http://localhost:48884/grid-api/create_grid_dimensions/",
+                json={}, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
+                count = data.get("dimensions_created", 0)
+                self.set_status("Cotas creadas: %d" % count, True)
+            else:
+                data = resp.json()
+                self.set_status("Error: %s" % data.get("error", "desconocido"), False)
+        except Exception as e:
+            self.set_status("Error conexion: %s" % str(e), False)
+        finally:
+            self._btn_dims.setEnabled(True)
+            self._btn_dims.setText("Crear Cotas de Ejes")
 
     def _on_send(self):
         self.send_requested.emit(self._build_send_config())

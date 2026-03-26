@@ -139,6 +139,8 @@ def create_grids(doc, request):
     created = [0]
 
     def do_create():
+        from Autodesk.Revit.DB import ReferenceArray
+
         all_x = [g["x"] for g in grids_x]
         all_y = [g["y"] for g in grids_y]
 
@@ -146,6 +148,9 @@ def create_grids(doc, request):
         x_max = max(all_x) if all_x else 0
         y_min = min(all_y) if all_y else 0
         y_max = max(all_y) if all_y else 0
+
+        v_grids = []  # vertical grids (sorted by X)
+        h_grids = []  # horizontal grids (sorted by Y)
 
         for g in grids_x:
             x = g["x"] * M_TO_FT
@@ -157,6 +162,7 @@ def create_grids(doc, request):
             )
             grid = DB.Grid.Create(doc, line)
             grid.Name = g["name"]
+            v_grids.append(grid)
             created[0] += 1
 
         for g in grids_y:
@@ -169,6 +175,7 @@ def create_grids(doc, request):
             )
             grid = DB.Grid.Create(doc, line)
             grid.Name = g["name"]
+            h_grids.append(grid)
             created[0] += 1
 
     _run_transaction(doc, "Create Grids from GUI", do_create)
@@ -363,6 +370,123 @@ def _align_levels_and_grids(doc):
 
 
 # ------------------------------------------------------------------
+# Grid Dimensions (Cotas)
+# ------------------------------------------------------------------
+
+@api.route("/create_grid_dimensions/", methods=["POST"])
+def create_grid_dimensions(doc, request):
+    """Create dimension chains between grid axes.
+    Horizontal dims along bottom edge, vertical dims along left edge."""
+    _ensure_dialog_handler()
+    from Autodesk.Revit.DB import ReferenceArray, Dimension
+
+    try:
+        grids = list(FilteredElementCollector(doc).OfClass(DB.Grid).ToElements())
+        if len(grids) < 2:
+            return routes.make_response(
+                status=400,
+                data={"success": False, "error": "Se necesitan al menos 2 ejes."})
+
+        # Separate grids by orientation
+        group_h = []  # horizontal (running in X)
+        group_v = []  # vertical (running in Y)
+        for g in grids:
+            curve = g.Curve
+            p0 = curve.GetEndPoint(0)
+            p1 = curve.GetEndPoint(1)
+            dx = abs(p1.X - p0.X)
+            dy = abs(p1.Y - p0.Y)
+            if dx >= dy:
+                group_h.append(g)
+            else:
+                group_v.append(g)
+
+        group_h.sort(key=lambda g: (g.Curve.GetEndPoint(0).Y + g.Curve.GetEndPoint(1).Y) / 2.0)
+        group_v.sort(key=lambda g: (g.Curve.GetEndPoint(0).X + g.Curve.GetEndPoint(1).X) / 2.0)
+
+        # Find a plan view to place dimensions
+        plan_view = None
+        for v in FilteredElementCollector(doc).OfClass(ViewPlan):
+            if not v.IsTemplate:
+                try:
+                    if v.GenLevel is not None:
+                        plan_view = v
+                        break
+                except Exception:
+                    pass
+        if plan_view is None:
+            return routes.make_response(
+                status=400,
+                data={"success": False, "error": "No se encontro vista en planta."})
+
+        dims_created = [0]
+        offset_ft = 3.0  # 3 feet offset from grid edge for dimension line
+
+        def do_dims():
+            # ── HORIZONTAL DIMENSIONS (between vertical grids, along bottom) ──
+            if len(group_v) >= 2:
+                ref_array = ReferenceArray()
+                for gv in group_v:
+                    ref_array.Append(DB.Reference(gv))
+
+                # Dimension line: horizontal, below the lowest horizontal grid
+                if group_h:
+                    min_y = min((g.Curve.GetEndPoint(0).Y + g.Curve.GetEndPoint(1).Y) / 2.0
+                                for g in group_h)
+                else:
+                    min_y = 0
+                y_dim = min_y - offset_ft
+
+                avg_x0 = (group_v[0].Curve.GetEndPoint(0).X + group_v[0].Curve.GetEndPoint(1).X) / 2.0
+                avg_x1 = (group_v[-1].Curve.GetEndPoint(0).X + group_v[-1].Curve.GetEndPoint(1).X) / 2.0
+                dim_line = Line.CreateBound(
+                    XYZ(avg_x0, y_dim, 0),
+                    XYZ(avg_x1, y_dim, 0))
+
+                try:
+                    doc.Create.NewDimension(plan_view, dim_line, ref_array)
+                    dims_created[0] += 1
+                except Exception:
+                    pass
+
+            # ── VERTICAL DIMENSIONS (between horizontal grids, along left) ──
+            if len(group_h) >= 2:
+                ref_array = ReferenceArray()
+                for gh in group_h:
+                    ref_array.Append(DB.Reference(gh))
+
+                # Dimension line: vertical, left of the leftmost vertical grid
+                if group_v:
+                    min_x = min((g.Curve.GetEndPoint(0).X + g.Curve.GetEndPoint(1).X) / 2.0
+                                for g in group_v)
+                else:
+                    min_x = 0
+                x_dim = min_x - offset_ft
+
+                avg_y0 = (group_h[0].Curve.GetEndPoint(0).Y + group_h[0].Curve.GetEndPoint(1).Y) / 2.0
+                avg_y1 = (group_h[-1].Curve.GetEndPoint(0).Y + group_h[-1].Curve.GetEndPoint(1).Y) / 2.0
+                dim_line = Line.CreateBound(
+                    XYZ(x_dim, avg_y0, 0),
+                    XYZ(x_dim, avg_y1, 0))
+
+                try:
+                    doc.Create.NewDimension(plan_view, dim_line, ref_array)
+                    dims_created[0] += 1
+                except Exception:
+                    pass
+
+        _run_transaction(doc, "Create grid dimensions", do_dims)
+
+        return routes.make_response(
+            data={"success": True, "dimensions_created": dims_created[0]})
+
+    except Exception as exc:
+        return routes.make_response(
+            status=500,
+            data={"success": False, "error": str(exc)})
+
+
+# ------------------------------------------------------------------
 # Levels
 # ------------------------------------------------------------------
 
@@ -534,6 +658,108 @@ def set_levels(doc, request):
         _run_transaction(doc, "Set units to meters", do_set_units)
     except Exception:
         pass
+
+    # ── AUTO-CREATE GRID DIMENSIONS in ALL plan views ──
+    try:
+        from Autodesk.Revit.DB import ReferenceArray
+
+        grids = list(FilteredElementCollector(doc).OfClass(DB.Grid).ToElements())
+        g_v = []  # vertical grids (running in Y)
+        g_h = []  # horizontal grids (running in X)
+        for g in grids:
+            curve = g.Curve
+            p0 = curve.GetEndPoint(0)
+            p1 = curve.GetEndPoint(1)
+            if abs(p1.Y - p0.Y) > abs(p1.X - p0.X):
+                g_v.append(g)
+            else:
+                g_h.append(g)
+
+        g_v.sort(key=lambda g: (g.Curve.GetEndPoint(0).X + g.Curve.GetEndPoint(1).X) / 2.0)
+        g_h.sort(key=lambda g: (g.Curve.GetEndPoint(0).Y + g.Curve.GetEndPoint(1).Y) / 2.0)
+
+        if g_v or g_h:
+            # Get grid extents for offset
+            all_x = [(g.Curve.GetEndPoint(0).X + g.Curve.GetEndPoint(1).X) / 2.0 for g in g_v] if g_v else [0]
+            all_y = [(g.Curve.GetEndPoint(0).Y + g.Curve.GetEndPoint(1).Y) / 2.0 for g in g_h] if g_h else [0]
+            x_max = max(all_x)
+            y_max = max(all_y)
+            # Grid extent (end of grid lines)
+            if g_v:
+                y_top = max(g_v[0].Curve.GetEndPoint(0).Y, g_v[0].Curve.GetEndPoint(1).Y)
+            else:
+                y_top = y_max + 16.4  # 5m default
+            if g_h:
+                x_right = max(g_h[0].Curve.GetEndPoint(0).X, g_h[0].Curve.GetEndPoint(1).X)
+            else:
+                x_right = x_max + 16.4
+
+            offset_ft = 6.0  # ~2m offset from grid bubble
+
+            # Collect ALL plan views
+            plan_views = []
+            for v in FilteredElementCollector(doc).OfClass(ViewPlan):
+                if not v.IsTemplate:
+                    try:
+                        if v.GenLevel is not None:
+                            plan_views.append(v)
+                    except Exception:
+                        pass
+
+            dim_dbg = []
+
+            def do_create_dims():
+                dim_dbg.append("views=%d g_v=%d g_h=%d" % (len(plan_views), len(g_v), len(g_h)))
+                for pv in plan_views:
+                    dim_dbg.append("view: %s" % pv.Name)
+                    # Horizontal dims (A,B,C,D) — ABOVE top grid
+                    if len(g_v) >= 2:
+                        try:
+                            ref_arr = ReferenceArray()
+                            for gv in g_v:
+                                ref_arr.Append(DB.Reference(gv))
+                            y_dim = y_top + offset_ft
+                            x0 = all_x[0]
+                            x1 = all_x[-1]
+                            dim_line = Line.CreateBound(
+                                XYZ(x0, y_dim, 0), XYZ(x1, y_dim, 0))
+                            d = doc.Create.NewDimension(pv, dim_line, ref_arr)
+                            dim_dbg.append("  H-dim OK id=%s" % str(d.Id.IntegerValue))
+                        except Exception as e:
+                            dim_dbg.append("  H-dim ERR: %s" % str(e))
+
+                    # Vertical dims (1,2,3) — RIGHT of rightmost grid
+                    if len(g_h) >= 2:
+                        try:
+                            ref_arr = ReferenceArray()
+                            for gh in g_h:
+                                ref_arr.Append(DB.Reference(gh))
+                            x_dim = x_right + offset_ft
+                            y0 = all_y[0]
+                            y1 = all_y[-1]
+                            dim_line = Line.CreateBound(
+                                XYZ(x_dim, y0, 0), XYZ(x_dim, y1, 0))
+                            d = doc.Create.NewDimension(pv, dim_line, ref_arr)
+                            dim_dbg.append("  V-dim OK id=%s" % str(d.Id.IntegerValue))
+                        except Exception as e:
+                            dim_dbg.append("  V-dim ERR: %s" % str(e))
+
+            _run_transaction(doc, "Create grid dimensions", do_create_dims)
+
+            # Write debug
+            try:
+                f = open(os.path.join(os.path.expanduser("~"), "Desktop", "dim_debug.txt"), "w")
+                f.write("\n".join(dim_dbg))
+                f.close()
+            except Exception:
+                pass
+    except Exception as ex:
+        try:
+            f = open(os.path.join(os.path.expanduser("~"), "Desktop", "dim_debug.txt"), "w")
+            f.write("OUTER ERROR: %s" % str(ex))
+            f.close()
+        except Exception:
+            pass
 
     return routes.make_response(
         data={
