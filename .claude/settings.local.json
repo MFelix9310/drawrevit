@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Admin/AppData/Roaming/pyRevit/Extensions/grid-api.extension/**)",
+      "Read(//c/ProgramData/Autodesk/RVT 2024/Family Templates/Spanish/**)",
+      "Read(//c/ProgramData/Autodesk/RVT 2024/Family Templates/English/**)",
+      "Bash(gh repo:*)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\Admin\\OneDrive\\Desktop\\PROYECTOS\\drawrevit\\revit_grid_gui\\pyrevit_extension\\grid-api.extension",
+      "C:\\Users\\Admin\\AppData\\Roaming\\pyRevit\\Extensions\\grid-api.extension"
+    ]
+  }
+}

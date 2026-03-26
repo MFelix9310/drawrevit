@@ -1014,14 +1014,47 @@ def _get_grid_intersections(doc):
                         except Exception:
                             name_v = DB.Element.Name.GetValue(gv)
 
+                        # Direction toward center: computed after all intersections
+                        # (will be filled in below)
+                        sign_x = 0
+                        sign_y = 0
+
+                        # edge_type: which edge this lindero is on
+                        # "h" = horizontal edge (top/bottom, axes 1/3) → shift in Y
+                        # "v" = vertical edge (left/right, axes A/D) → shift in X
+                        # "both" = corner (esquinera)
+                        if is_h_edge and is_v_edge:
+                            edge_type = "both"
+                        elif is_h_edge:
+                            edge_type = "h"  # on top or bottom edge
+                        elif is_v_edge:
+                            edge_type = "v"  # on left or right edge
+                        else:
+                            edge_type = "none"
+
                         intersections.append({
                             "point": point,
                             "category": category,
                             "grid_h": name_h,
                             "grid_v": name_v,
+                            "sign_x": sign_x,
+                            "sign_y": sign_y,
+                            "edge_type": edge_type,
                         })
             except Exception:
                 pass
+
+    # Compute centroid and assign sign_x/sign_y toward center
+    if intersections:
+        cx = sum(i["point"].X for i in intersections) / float(len(intersections))
+        cy = sum(i["point"].Y for i in intersections) / float(len(intersections))
+        for info in intersections:
+            if info["category"] in ("esquinera", "lindero"):
+                dx = cx - info["point"].X
+                dy = cy - info["point"].Y
+                # sign = direction toward center (+1 or -1)
+                info["sign_x"] = 1 if dx > 0.01 else (-1 if dx < -0.01 else 0)
+                info["sign_y"] = 1 if dy > 0.01 else (-1 if dy < -0.01 else 0)
 
     return intersections
 
@@ -1763,6 +1796,9 @@ def create_foundations(doc, request):
                         "category": asgn.get("type", info.get("category", "central")),
                         "grid_h": info["grid_h"],
                         "grid_v": info["grid_v"],
+                        "sign_x": info.get("sign_x", 0),
+                        "sign_y": info.get("sign_y", 0),
+                        "edge_type": info.get("edge_type", "none"),
                         "cfg_override": {
                             "width": float(asgn.get("width", 1500.0)),
                             "length": float(asgn.get("length", 1500.0)),
@@ -1781,6 +1817,9 @@ def create_foundations(doc, request):
                     "category": info["category"],
                     "grid_h": info["grid_h"],
                     "grid_v": info["grid_v"],
+                    "sign_x": info.get("sign_x", 0),
+                    "sign_y": info.get("sign_y", 0),
+                    "edge_type": info.get("edge_type", "none"),
                     "cfg_override": None,
                 })
 
@@ -1848,6 +1887,13 @@ def create_foundations(doc, request):
                 t = float(cfg.get("thickness", 400.0))
                 all_sizes.add((w, l, t))
 
+        # Also add ROTATED sizes (w,l swapped) for linderos on vertical edges
+        rotated_sizes = set()
+        for (w, l, t) in all_sizes:
+            if w != l:
+                rotated_sizes.add((l, w, t))  # swapped
+        all_sizes = all_sizes | rotated_sizes
+
         # Pre-create all needed footing families
         for (w, l, t) in all_sizes:
             sym = _get_footing_sym_for_size(w, l, t)
@@ -1895,15 +1941,70 @@ def create_foundations(doc, request):
                     t = float(cfg_used.get("thickness", 400.0))
                     thickness_mm = t
 
+                # For lindero on vertical edge (A/D): ROTATE footing by swapping W and L
+                edge = item.get("edge_type", "none")
+                if cat == "lindero" and edge == "v" and w != l:
+                    w, l = l, w  # swap width and length = 90° rotation
+
                 # Get pre-created footing symbol for this exact size
                 fkey = "%dx%dx%d" % (int(w), int(l), int(t))
                 footing_sym = footing_family_cache.get(fkey)
 
+                # If rotated size not pre-created, create it now
+                if footing_sym is None and cat == "lindero" and edge == "v":
+                    sym = _get_footing_sym_for_size(w, l, t)
+                    if sym:
+                        footing_family_cache[fkey] = sym
+                        footing_sym = sym
+
                 if footing_sym is None:
                     continue
 
-                # Place footing: Z=0 because it's offset from level, not absolute
-                footing_pt = DB.XYZ(pt.X, pt.Y, 0)
+                # Footing position:
+                #   central:   centered on intersection
+                #   esquinera: CORNER at intersection, body extends toward building center
+                #   lindero:   EDGE at intersection, body extends toward building center
+                # Pedestal stays at intersection (pt.X, pt.Y) for all types
+                w_f = w / 304.8
+                l_f = l / 304.8
+                sx = item.get("sign_x", 0)
+                sy = item.get("sign_y", 0)
+
+                if cat == "esquinera":
+                    # Pedestal center at intersection. Footing shifted so pedestal
+                    # is fully inside, near the outer corner of the footing.
+                    pw_ft = float(central_cfg.get("pedestal_width", 400.0)) / 304.8
+                    pl_ft = float(central_cfg.get("pedestal_length", 400.0)) / 304.8
+                    if override is not None:
+                        pw_ft = float(override.get("pedestal_width", 400.0)) / 304.8
+                        pl_ft = float(override.get("pedestal_length", 400.0)) / 304.8
+                    foot_x = pt.X + sx * (w_f - pw_ft) / 2.0
+                    foot_y = pt.Y + sy * (l_f - pl_ft) / 2.0
+                elif cat == "lindero":
+                    # Pedestal centered at intersection. Footing shifted so pedestal
+                    # is fully inside, near the outer edge of the footing.
+                    _pw_ft = float(central_cfg.get("pedestal_width", 400.0)) / 304.8
+                    _pl_ft = float(central_cfg.get("pedestal_length", 400.0)) / 304.8
+                    if override is not None:
+                        _pw_ft = float(override.get("pedestal_width", 400.0)) / 304.8
+                        _pl_ft = float(override.get("pedestal_length", 400.0)) / 304.8
+                    edge = item.get("edge_type", "none")
+                    if edge == "v":
+                        # Left/right edge (axes A/D): shift footing in X toward center
+                        foot_x = pt.X + sx * (w_f - _pw_ft) / 2.0
+                        foot_y = pt.Y
+                    elif edge == "h":
+                        # Top/bottom edge (axes 1/3): shift footing in Y toward center
+                        foot_x = pt.X
+                        foot_y = pt.Y + sy * (l_f - _pl_ft) / 2.0
+                    else:
+                        foot_x = pt.X
+                        foot_y = pt.Y
+                else:
+                    foot_x = pt.X
+                    foot_y = pt.Y
+
+                footing_pt = DB.XYZ(foot_x, foot_y, 0)
                 doc.Create.NewFamilyInstance(
                     footing_pt, footing_sym, target_level, StructuralType.Footing)
                 placed[cat] += 1
@@ -1936,8 +2037,11 @@ def create_foundations(doc, request):
 
                         ped_h_ft = ped_h_mm / 304.8
 
-                        # Z=0 relative to level, base offset via parameter
-                        ped_pt = DB.XYZ(pt.X, pt.Y, 0)
+                        # Pedestal: CENTER always at intersection for ALL types
+                        ped_x = pt.X
+                        ped_y = pt.Y
+
+                        ped_pt = DB.XYZ(ped_x, ped_y, 0)
                         try:
                             col_inst = doc.Create.NewFamilyInstance(
                                 ped_pt, col_sym, target_level, StructuralType.Column)
