@@ -15,6 +15,7 @@ from ui.control_panel import ControlPanel
 from ui.families_panel import FamiliesPanel
 from ui.levels_panel import LevelsPanel
 from ui.foundations_panel import FoundationsPanel
+from ui.rebar_panel import RebarPanel
 
 
 class MainWindow(QMainWindow):
@@ -79,6 +80,11 @@ class MainWindow(QMainWindow):
         self._foundations_panel = FoundationsPanel()
         self._foundations_panel.setFixedWidth(380)
         self._tabs.addTab(self._foundations_panel, "Cimentaciones")
+
+        # Tab 5: Acero de Refuerzo
+        self._rebar_panel = RebarPanel()
+        self._rebar_panel.setFixedWidth(380)
+        self._tabs.addTab(self._rebar_panel, "Acero de Refuerzo")
 
         left_layout.addWidget(self._tabs)
 

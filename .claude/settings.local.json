@@ -4,7 +4,15 @@
       "Read(//c/Users/Admin/AppData/Roaming/pyRevit/Extensions/grid-api.extension/**)",
       "Read(//c/ProgramData/Autodesk/RVT 2024/Family Templates/Spanish/**)",
       "Read(//c/ProgramData/Autodesk/RVT 2024/Family Templates/English/**)",
-      "Bash(gh repo:*)"
+      "Bash(gh repo:*)",
+      "Read(//c/ProgramData/Autodesk/RVT 2024/Libraries/**)",
+      "WebFetch(domain:www.autodesk.com)",
+      "WebFetch(domain:knowledge.autodesk.com)",
+      "WebFetch(domain:help.autodesk.com)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''revit_grid_gui/ui/rebar_panel.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
+      "Bash(python -c \"from ui.rebar_panel import RebarPanel; print\\(''OK''\\)\")",
+      "Bash(python -c \"from ui.main_window import MainWindow; print\\(''OK''\\)\")",
+      "Bash(pip install:*)"
     ],
     "additionalDirectories": [
       "c:\\Users\\Admin\\OneDrive\\Desktop\\PROYECTOS\\drawrevit\\revit_grid_gui\\pyrevit_extension\\grid-api.extension",
